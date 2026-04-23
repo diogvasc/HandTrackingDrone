@@ -5,3 +5,8 @@ To run this project it is nedeed to have codes running:
 
 The video controller runs on a PC <br />
 The Flight Controller runs on an ESP32 connected to the drone controller
+
+# Main files
+
+- cameraControlOFF.py -> to test sending camera flags by bluetooth to ESP32
+- 
