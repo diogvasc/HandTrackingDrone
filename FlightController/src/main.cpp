@@ -2,35 +2,33 @@
 #include "FlightC.h"
 #include <BluetoothSerial.h>
 
-int pwmPin = 2;  
+int dacPin = 25;  
 
-BluetoothSerial SerialBT;
+BluetoothSerial FlightC::SerialBT;
 
 FlightC::Controller flight;
 FlightC::SepValues sepValues;
+
 int iteration = 0; // Variável para contar as iterações
 
 void setup() {
     Serial.begin(115200);
-    pinMode(pwmPin, OUTPUT);
+    pinMode(dacPin, OUTPUT);
 
-    SerialBT.begin("DroneBT2");
+    FlightC::SerialBT.begin("DroneBT");
     Serial.println("Bluetooth iniciado!");
 
 }
 
 void loop() {
-    iteration++; // Incrementa a iteração
+    FlightC::SepValues received = flight.btReceiver();
 
-    sepValues = flight.btReceiver();
+    if (received.val1 != 0 || received.val2 != 0) {
+        flight.setTarget(received);
+        Serial.print("Target: ");
+        Serial.println(received.val1);
+    }
 
-    // Imprime o número da iteração e os valores recebidos
-    Serial.print("Iteração ");
-    Serial.print(iteration);
-    Serial.print(" - Valor 1: ");
-    Serial.print(sepValues.val1);
-    Serial.print(" | Valor 2: ");
-    Serial.println(sepValues.val2);
-
-    delay(500);
+    flight.prog(dacPin);  // sobe/desce 1 passo por iteração
+    delay(10);            // loop rápido, sem delay grande
 }
