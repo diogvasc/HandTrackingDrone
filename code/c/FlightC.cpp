@@ -1,5 +1,6 @@
 #include "FlightC.h"
 #include <Arduino.h>
+#include "BluetoothSerial.h"
 
 namespace FlightC {
 
@@ -46,4 +47,4 @@ namespace FlightC {
         return sepValues;
     }
 
-} // namespace FlightC
+} 

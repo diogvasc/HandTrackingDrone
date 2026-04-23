@@ -6,11 +6,9 @@
 
 namespace FlightC {
 
-    // Bluetooth global
-   extern BluetoothSerial SerialBT;
+   //extern BluetoothSerial SerialBT;
 
-    // Definição da estrutura SepValues
-    struct SepValues {
+    struct SepValues {  // depois serão 4
         float val1;
         float val2;
     };
