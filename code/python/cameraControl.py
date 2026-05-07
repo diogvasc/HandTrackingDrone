@@ -1,4 +1,4 @@
-# PII — Drone Feed + Hand Gesture Control # 7/05
+# PII — Drone Feed + Hand Gesture Control
 
 import socket
 import time
@@ -20,17 +20,17 @@ EOI = b"\xff\xd9"
 # ===========================================================
 # TUNABLE VALUES — adjust these for trial and error
 # ===========================================================
-MAX_BUFFER_SIZE = 600_000
-MIN_FRAME_SIZE  = 15_000
-OS_RECV_BUFFER  = 2 * 1024 * 1024
+MAX_BUFFER_SIZE    = 600_000
+MIN_FRAME_SIZE     = 15_000
+OS_RECV_BUFFER     = 2 * 1024 * 1024
 KEEPALIVE_INTERVAL = 0.02
-QUEUE_MAXSIZE   = 1
-CONFIRM_FRAMES  = 5
+QUEUE_MAXSIZE      = 1
+BT_SEND_INTERVAL   = 0.05  # BT resend rate (seconds) — independent of frame rate
 
 # ---------------------------
 # BLUETOOTH CONFIG
 # ---------------------------
-BT_PORT = "COM7"   # porta de saída do DroneBT2
+BT_PORT = "COM11"   # porta de saída do DroneBT2
 BT_BAUD = 9600
 # ===========================================================
 
@@ -56,15 +56,23 @@ try:
 except serial.SerialException as e:
     print(f"Bluetooth not available ({e}) — running without it")
 
+confirmed_flag = None
+
 def send_flag(flag: int):
-    """Envia flag no formato que o btReceiver() do ESP32 espera: 'val1,val2\n'"""
     if bt and bt.is_open:
         try:
-            message = f"{flag},0\n"
-            bt.write(message.encode("utf-8"))
-            print(f"  → Enviado: {message.strip()}")
+            bt.write(f"{flag},0\n".encode("utf-8"))
         except Exception as e:
             print(f"Bluetooth send error: {e}")
+
+def bt_send_loop():
+    while running:
+        flag = confirmed_flag
+        if flag is not None:
+            send_flag(flag)
+        time.sleep(BT_SEND_INTERVAL)
+
+threading.Thread(target=bt_send_loop, daemon=True).start()
 
 # Flag mapping:
 #   1 = só direita fechada
@@ -100,8 +108,8 @@ print("Receiving video...")
 # ---------------------------
 # MEDIAPIPE SETUP
 # ---------------------------
-mp_drawing = mp.solutions.drawing_utils
-mp_hands = mp.solutions.hands
+mp_drawing  = mp.solutions.drawing_utils
+mp_hands    = mp.solutions.hands
 hands_model = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=2,
@@ -150,33 +158,25 @@ def receive_stream():
 
         if not collecting:
             s = payload.find(SOI)
-            if s != -1:
-                buffer.clear()
-                buffer += payload[s:]
-                collecting = True
-            continue
-
-        new_soi = payload.find(SOI)
-        if new_soi != -1:
+            if s == -1:
+                continue
             buffer.clear()
-            buffer += payload[new_soi:]
+            buffer += payload[s:]
+            collecting = True
         else:
-            buffer += payload
+            buffer += payload  # never check for SOI mid-frame — avoids false resets
 
         if len(buffer) > MAX_BUFFER_SIZE:
             buffer.clear()
             collecting = False
             continue
 
-        e = buffer.rfind(EOI)
+        e = buffer.find(EOI, MIN_FRAME_SIZE - 2)
         if e == -1:
             continue
 
         jpg = bytes(buffer[:e + 2])
         collecting = False
-
-        if len(jpg) < MIN_FRAME_SIZE:
-            continue
 
         if frame_queue.full():
             try:
@@ -190,11 +190,8 @@ threading.Thread(target=receive_stream, daemon=True).start()
 # ---------------------------
 # MAIN / DISPLAY LOOP
 # ---------------------------
-hand_states    = {"Left": None, "Right": None}
-prev_states    = {"Left": None, "Right": None}  # por mão, evita prints repetidos
-candidate_flag = None
-flag_counter   = 0
-confirmed_flag = None  # última flag estável confirmada
+hand_states         = {"Left": None, "Right": None}
+prev_states         = {"Left": None, "Right": None}
 
 while True:
     try:
@@ -219,49 +216,28 @@ while True:
     results = hands_model.process(image_rgb)
     image_rgb.flags.writeable = True
 
-    # Reset cada frame para que mãos que saíram do ecrã não persistam
     hand_states = {"Left": None, "Right": None}
 
     if results.multi_hand_landmarks and results.multi_handedness:
         for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-            label = handedness.classification[0].label  # "Left" ou "Right"
-            raw_label = "Left" if label == "Right" else "Right"  # corrige o flip da webcam
-            label = raw_label
+            label = handedness.classification[0].label
+            label = "Left" if label == "Right" else "Right"  # corrige o flip da webcam
             state = detect_hand_state(hand_landmarks)
             hand_states[label] = state
 
-            # Só imprime se o estado desta mão mudou
             if state != prev_states[label] and state is not None:
                 print(f"Detected: {label} {state}")
                 prev_states[label] = state
 
-            mp_drawing.draw_landmarks(
-                frame,
-                hand_landmarks,
-                mp_hands.HAND_CONNECTIONS
-            )
+            mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-    # Limpa prev_state de mãos que saíram do ecrã
     for hand in ["Left", "Right"]:
         if hand_states[hand] is None:
             prev_states[hand] = None
 
     flag = resolve_flag(hand_states["Left"], hand_states["Right"])
-
-    # Debounce: acumula frames consecutivos com a mesma flag
-    if flag == candidate_flag:
-        flag_counter += 1
-    else:
-        candidate_flag = flag
-        flag_counter = 1
-
-    # Só confirma nova flag depois de CONFIRM_FRAMES consecutivos (anti-glitch)
-    if flag_counter >= CONFIRM_FRAMES and flag is not None:
+    if flag is not None:
         confirmed_flag = flag
-
-    # Envio contínuo da flag confirmada (todos os frames)
-    if confirmed_flag is not None:
-        send_flag(confirmed_flag)
 
     cv2.imshow("PII — Drone Feed", frame)
     if cv2.waitKey(1) == ord('q'):
