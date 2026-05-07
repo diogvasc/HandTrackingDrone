@@ -9,7 +9,7 @@ import time
 # ---------------------------
 # BLUETOOTH CONFIG
 # ---------------------------
-BT_PORT = "COM11"   # porta de saída do DroneBT2
+BT_PORT = "COM7"   # porta de saída do DroneBT2
 BT_BAUD = 9600
 
 # ---------------------------
@@ -34,23 +34,23 @@ def send_flag(flag: int):
             print(f"Bluetooth send error: {e}")
 
 # Flag mapping:
-#   0 = ambos fechados        (FIST + FIST)
-#   1 = só esquerda fechada
-#   2 = só direita fechada
-#   3 = só esquerda aberta
-#   4 = só direita aberta
+#   1 = só direita fechada 
+#   2 = só esquerda fechada
+#   3 = só direita aberta
+#   4 = só esquerda aberta
 #   5 = ambos abertos         (OPEN + OPEN)
-#   6 = esquerda fechada + direita aberta
-#   7 = esquerda aberta  + direita fechada
+#   6 = esquerda aberta + direita fechada
+#   7 = esquerda fechada + direita aberta
+#   8 = ambos fechados        (FIST + FIST)
 def resolve_flag(left, right):
-    if left == "FIST"      and right == "FIST":       return 0
-    if left == "FIST"      and right is None:          return 1
-    if left is None        and right == "FIST":        return 2
-    if left == "OPEN PALM" and right is None:          return 3
-    if left is None        and right == "OPEN PALM":   return 4
+    if left is None        and right == "FIST":        return 1
+    if left == "FIST"      and right is None:          return 2
+    if left is None        and right == "OPEN PALM":   return 3
+    if left == "OPEN PALM" and right is None:          return 4
     if left == "OPEN PALM" and right == "OPEN PALM":   return 5
-    if left == "FIST"      and right == "OPEN PALM":   return 6
-    if left == "OPEN PALM" and right == "FIST":        return 7
+    if left == "OPEN PALM" and right == "FIST":        return 6
+    if left == "FIST"      and right == "OPEN PALM":   return 7
+    if left == "FIST"      and right == "FIST":        return 8
     return None
 
 # ---------------------------
@@ -111,8 +111,7 @@ while True:
     if results.multi_hand_landmarks and results.multi_handedness:
         for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
             # Após flip, os labels do MediaPipe ficam invertidos — corrigimos aqui
-            raw_label = handedness.classification[0].label
-            label = "Right" if raw_label == "Left" else "Left"
+            label = handedness.classification[0].label
 
             state = detect_hand_state(hand_landmarks)
             hand_states[label] = state

@@ -1,6 +1,4 @@
-# 25/03
-#venv\Scripts\activate
-
+# PII — Drone Feed + Hand Gesture Control # 7/05
 
 import socket
 import time
@@ -23,31 +21,22 @@ EOI = b"\xff\xd9"
 # TUNABLE VALUES — adjust these for trial and error
 # ===========================================================
 MAX_BUFFER_SIZE = 600_000
-# If frames are still corrupted: raise (e.g. 600_000, 800_000)
-# If you see stale/delayed frames: lower (e.g. 300_000)
-
-MIN_FRAME_SIZE = 15_000
-# If you still see corrupt/rough frames: raise (e.g. 20_000, 30_000)
-# If valid frames are being silently dropped (frozen feed): lower (e.g. 8_000, 5_000)
-# Tip: uncomment the print() line in the display loop to measure your real frame sizes
-
-OS_RECV_BUFFER = 2 * 1024 * 1024
-# OS-level UDP socket buffer. Safe range: 1MB to 4MB
-
+MIN_FRAME_SIZE  = 15_000
+OS_RECV_BUFFER  = 2 * 1024 * 1024
 KEEPALIVE_INTERVAL = 0.02
-# If stream cuts out intermittently: lower (e.g. 0.015)
-# If the drone seems overloaded/stuttering: raise (e.g. 0.03)
-
-QUEUE_MAXSIZE = 1
-# 1 = lowest latency | 2-3 = smoother but adds latency
+QUEUE_MAXSIZE   = 1
+CONFIRM_FRAMES  = 5
 
 # ---------------------------
 # BLUETOOTH CONFIG
 # ---------------------------
-BT_PORT = "COM3"    # Change to your Bluetooth COM port
-BT_BAUD = 9600      # Change if your device uses a different baud rate
+BT_PORT = "COM7"   # porta de saída do DroneBT2
+BT_BAUD = 9600
 # ===========================================================
 
+# ---------------------------
+# SOCKET SETUP
+# ---------------------------
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind(("", PORT))
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, OS_RECV_BUFFER)
@@ -62,33 +51,40 @@ frame_queue = queue.Queue(maxsize=QUEUE_MAXSIZE)
 bt = None
 try:
     bt = serial.Serial(BT_PORT, BT_BAUD, timeout=1)
+    time.sleep(1.5)
     print(f"Bluetooth connected on {BT_PORT}")
-except Exception as e:
+except serial.SerialException as e:
     print(f"Bluetooth not available ({e}) — running without it")
 
 def send_flag(flag: int):
-    """Send a single flag byte over Bluetooth. Silently skips if not connected."""
+    """Envia flag no formato que o btReceiver() do ESP32 espera: 'val1,val2\n'"""
     if bt and bt.is_open:
         try:
-            bt.write(bytes([flag]))
+            message = f"{flag},0\n"
+            bt.write(message.encode("utf-8"))
+            print(f"  → Enviado: {message.strip()}")
         except Exception as e:
             print(f"Bluetooth send error: {e}")
 
 # Flag mapping:
-#   0 = Both fist
-#   1 = Left fist only
-#   2 = Right fist only
-#   3 = Left open only
-#   4 = Right open only
-#   5 = Both open
+#   1 = só direita fechada
+#   2 = só esquerda fechada
+#   3 = só direita aberta
+#   4 = só esquerda aberta
+#   5 = ambos abertos         (OPEN + OPEN)
+#   6 = esquerda aberta + direita fechada
+#   7 = esquerda fechada + direita aberta
+#   8 = ambos fechados        (FIST + FIST)
 def resolve_flag(left, right):
-    if left == "FIST"      and right == "FIST":       return 0
-    if left == "FIST"      and right is None:          return 1
-    if left is None        and right == "FIST":        return 2
-    if left == "OPEN PALM" and right is None:          return 3
-    if left is None        and right == "OPEN PALM":   return 4
+    if left is None        and right == "FIST":        return 1
+    if left == "FIST"      and right is None:          return 2
+    if left is None        and right == "OPEN PALM":   return 3
+    if left == "OPEN PALM" and right is None:          return 4
     if left == "OPEN PALM" and right == "OPEN PALM":   return 5
-    return None  # mixed/undefined state — don't send
+    if left == "OPEN PALM" and right == "FIST":        return 6
+    if left == "FIST"      and right == "OPEN PALM":   return 7
+    if left == "FIST"      and right == "FIST":        return 8
+    return None
 
 # ---------------------------
 # KEEP STREAM ALIVE
@@ -160,7 +156,6 @@ def receive_stream():
                 collecting = True
             continue
 
-        # Always restart buffer from new SOI if one appears mid-collection
         new_soi = payload.find(SOI)
         if new_soi != -1:
             buffer.clear()
@@ -195,9 +190,11 @@ threading.Thread(target=receive_stream, daemon=True).start()
 # ---------------------------
 # MAIN / DISPLAY LOOP
 # ---------------------------
-prev_state = None
-hand_states = {"Left": None, "Right": None}
-prev_flag = None
+hand_states    = {"Left": None, "Right": None}
+prev_states    = {"Left": None, "Right": None}  # por mão, evita prints repetidos
+candidate_flag = None
+flag_counter   = 0
+confirmed_flag = None  # última flag estável confirmada
 
 while True:
     try:
@@ -212,40 +209,60 @@ while True:
     if frame is None:
         continue
 
-    # Uncomment to calibrate MIN_FRAME_SIZE — shows size of every decoded frame:
+    # Uncomment to calibrate MIN_FRAME_SIZE:
     # print(f"Frame size: {len(jpg):,} bytes")
+
+    frame = cv2.rotate(frame, cv2.ROTATE_180)
 
     image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     image_rgb.flags.writeable = False
     results = hands_model.process(image_rgb)
     image_rgb.flags.writeable = True
 
-    # Reset each frame so vanished hands don't linger
+    # Reset cada frame para que mãos que saíram do ecrã não persistam
     hand_states = {"Left": None, "Right": None}
 
     if results.multi_hand_landmarks and results.multi_handedness:
         for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-            label = handedness.classification[0].label  # "Left" or "Right"
+            label = handedness.classification[0].label  # "Left" ou "Right"
+            raw_label = "Left" if label == "Right" else "Right"  # corrige o flip da webcam
+            label = raw_label
             state = detect_hand_state(hand_landmarks)
             hand_states[label] = state
-            if state != prev_state and state is not None:
-                print("Detected:", state)
-                prev_state = state
-            # draw landmarks
+
+            # Só imprime se o estado desta mão mudou
+            if state != prev_states[label] and state is not None:
+                print(f"Detected: {label} {state}")
+                prev_states[label] = state
+
             mp_drawing.draw_landmarks(
                 frame,
                 hand_landmarks,
                 mp_hands.HAND_CONNECTIONS
             )
 
-    # Resolve and send flag only when it changes
-    flag = resolve_flag(hand_states["Left"], hand_states["Right"])
-    if flag is not None and flag != prev_flag:
-        print(f"Sending flag: {flag}")
-        send_flag(flag)
-        prev_flag = flag
+    # Limpa prev_state de mãos que saíram do ecrã
+    for hand in ["Left", "Right"]:
+        if hand_states[hand] is None:
+            prev_states[hand] = None
 
-    frame = cv2.rotate(frame, cv2.ROTATE_180)
+    flag = resolve_flag(hand_states["Left"], hand_states["Right"])
+
+    # Debounce: acumula frames consecutivos com a mesma flag
+    if flag == candidate_flag:
+        flag_counter += 1
+    else:
+        candidate_flag = flag
+        flag_counter = 1
+
+    # Só confirma nova flag depois de CONFIRM_FRAMES consecutivos (anti-glitch)
+    if flag_counter >= CONFIRM_FRAMES and flag is not None:
+        confirmed_flag = flag
+
+    # Envio contínuo da flag confirmada (todos os frames)
+    if confirmed_flag is not None:
+        send_flag(confirmed_flag)
+
     cv2.imshow("PII — Drone Feed", frame)
     if cv2.waitKey(1) == ord('q'):
         break

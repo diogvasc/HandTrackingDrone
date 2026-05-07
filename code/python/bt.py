@@ -19,9 +19,8 @@ import serial
 import time
 
 # ─── CONFIGURAÇÃO ────────────────────────────────────────────────────────────
-BT_PORT = "COM11" #com 11 ou 7        # Muda para a tua porta (ex: "COM6", "/dev/rfcomm0")
-BT_BAUD = 9600          # Baud rate — para BT SPP geralmente não importa,
-                        # mas mantém consistente com o pyserial
+BT_PORT = "COM7" #com 11 ou 7 PORTA COM DIREÇÃO 'ENVIADOS'       
+BT_BAUD = 9600          
 # ─────────────────────────────────────────────────────────────────────────────
 
 
